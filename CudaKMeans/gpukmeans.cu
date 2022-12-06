@@ -6,8 +6,6 @@
 #include "gpukmeans.cuh"
 #include "utils.h"
 
-#define globaln 2
-
 namespace GPU
 {
     __host__ float* gpuKMeans(float* points, int N, int n, int K, int max_iterations)
@@ -101,7 +99,12 @@ namespace GPU
             cudaMemset(d_centroids, 0.0, K * n * sizeof(float));
             cudaMemset(d_cluster_sizes, 0, K * sizeof(int));
 
-            updateCentroidsNaive<<<gridDim, blockDim>>>(d_points, d_centroids, d_assignments, d_cluster_sizes, N, n, K);
+            // reserve memory in shared for assignments and points
+            // THREADS_PER_BLOCK is the number of points processed by a block
+            // so we need THREADS_PER_BLOCK assignements (int)
+            // and THREADS_PER_BLOCK * n coordinates (floats)
+            updateCentroidsNaive<<<gridDim, blockDim, THREADS_PER_BLOCK * sizeof(int) + THREADS_PER_BLOCK * n * sizeof(float)>>>
+                (d_points, d_centroids, d_assignments, d_cluster_sizes, N, n, K);
 
             
             // Divide coordinates by cluster sizes
@@ -215,17 +218,17 @@ namespace GPU
             return;
         }
 
-        // __shared__ float* s_points = new float[THREADS_PER_BLOCK * n];
-        __shared__ float s_points[THREADS_PER_BLOCK * globaln];
+        extern __shared__ float s_points[];
+        extern __shared__ int s_assignments[];
+        int memory_offset = THREADS_PER_BLOCK; // used to offset pointers when using s_points
 
         // copy corresponding point to shared memory
         for (int dimension = 0; dimension < n; dimension++)
         {
-            s_points[local_point_idx + dimension] = points[global_point_idx + dimension];
+            s_points[memory_offset + local_point_idx + dimension] = points[global_point_idx + dimension];
         }
 
         // copy assignments to shared memory
-        __shared__ int s_assignments[THREADS_PER_BLOCK];
         s_assignments[local_idx] = assignments[global_idx];
 
         __syncthreads();
@@ -258,7 +261,7 @@ namespace GPU
                 // add point coordinates to the relevant sum
                 for (int dimension = 0; dimension < n; dimension++)
                 {
-                    b_coordinates_sums[centroid * n + dimension] += s_points[point * n + dimension];
+                    b_coordinates_sums[centroid * n + dimension] += s_points[memory_offset + point * n + dimension];
                 }
             }
 
@@ -278,6 +281,8 @@ namespace GPU
 
         __syncthreads();
     }
+
+
 
     __global__ void divideCentroidCoordinates(float* centroids, int* cluster_sizes, int n, int K)
     {
