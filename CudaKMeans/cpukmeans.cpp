@@ -66,11 +66,11 @@ namespace CPU
         // sum up coordinates
         for (int point = 0; point < N; point++)
         {
-            int centroid = assignments[point];
-            cluster_sizes[centroid]++;
+            int assigned_centroid = assignments[point];
+            cluster_sizes[assigned_centroid]++;
             for (int dimension = 0; dimension < n; dimension++)
             {
-                new_centroids[centroid * n + dimension] += points[point * n + dimension];
+                new_centroids[assigned_centroid * n + dimension] += points[point * n + dimension];
             }
         }
 
