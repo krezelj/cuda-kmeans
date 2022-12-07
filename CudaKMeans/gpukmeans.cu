@@ -97,13 +97,6 @@ namespace GPU
             // calculate assignments
             assignPointsToClusters<<<gridDim, blockDim, K * n * sizeof(float)>>>(d_points, d_centroids, d_assignments, N, n, K);
 
-            // check if enough points changed clusters
-
-            /*cudaStatus = cudaMemcpy(assignments, d_assignments, N * sizeof(int), cudaMemcpyDeviceToHost);
-            if (cudaStatus != cudaSuccess) {
-                fprintf(stderr, "cudaMemcpy failed!");
-            }*/
-
             // update clusters
             if (pr_mode == SIMPLIFIED_PARALLEL_REDUCTION)
             {
