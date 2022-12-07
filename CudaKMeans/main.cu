@@ -24,12 +24,17 @@ void display_centroids(float* centroids, int K, int n)
     }
 }
 
+void benchmark()
+{
+
+}
+
 
 int main()
 {
     srand(time(0));
 
-    const int N = 5000000, n = 3, K = 8;
+    const int N = 1000000, n = 3, K = 8;
 
     float* points = generatePoints(N, n);
     float* centroids;

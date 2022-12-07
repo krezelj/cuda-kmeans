@@ -91,7 +91,7 @@ namespace GPU
         for (int iteration = 0; iteration < max_iterations; iteration++)
         {
             // calculate assignments
-            assignPointsToClusters<<<gridDim, blockDim>>>(d_points, d_centroids, d_assignments, N, n, K);
+            assignPointsToClusters<<<gridDim, blockDim, K * n * sizeof(float)>>>(d_points, d_centroids, d_assignments, N, n, K);
 
             // check if enough points changed clusters
             /*cudaStatus = cudaMemcpy(assignments, d_assignments, N * sizeof(int), cudaMemcpyDeviceToHost);
@@ -104,14 +104,14 @@ namespace GPU
 
             // ------------------------------------- naive version --------------------------------------------
             // // reset centroids and cluster sizes to prepare them for summation
-            // cudaMemset(d_centroids, 0.0, K * n * sizeof(float));
-            // cudaMemset(d_cluster_sizes, 0, K * sizeof(int));
+            //cudaMemset(d_centroids, 0.0, K * n * sizeof(float));
+            //cudaMemset(d_cluster_sizes, 0, K * sizeof(int));
 
-            // reserve shared memory for assignments and points, we need:
-            // THREADS_PER_BLOCK        assignements (int) +
-            // THREADS_PER_BLOCK * n    coordinates (floats)
-            /*updateCentroidsNaive<<<gridDim, blockDim, THREADS_PER_BLOCK * sizeof(int) + THREADS_PER_BLOCK * n * sizeof(float)>>>
-                (d_points, d_centroids, d_assignments, d_cluster_sizes, N, n, K);*/
+            //// reserve shared memory for assignments and points, we need:
+            //// THREADS_PER_BLOCK        assignements (int) +
+            //// THREADS_PER_BLOCK * n    coordinates (floats)
+            //updateCentroidsNaive<<<gridDim, blockDim, THREADS_PER_BLOCK * sizeof(int) + THREADS_PER_BLOCK * n * sizeof(float)>>>
+            //    (d_points, d_centroids, d_assignments, d_cluster_sizes, N, n, K);
 
             // -------------------------------------------------------------------------------------------------
 
@@ -204,20 +204,44 @@ namespace GPU
 
     __global__ void assignPointsToClusters(float* points, float* centroids, int* assignments, int N, int n, int K)
     {
-        const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-        const int point_idx = idx * n;
+        const int local_idx = threadIdx.x;
+        const int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
+        const int point_idx = global_idx * n;
 
-        if (idx >= N)
+        if (global_idx >= N)
         {
             return;
         }
+
+        // copy centroid data to shared memory
+        // we assume that N >= K (typically N >> K so it's a reasonable assumption)
+        // we also must assume that K <= THREADS_PER_BLOCK
+        // if K > TPB we should copy more than one centroid per thread
+        // but we will assume K < TPB
+        extern __shared__ float s_centroids[]; // size is K * n
+        if (local_idx < K)
+        {
+            for (int dimension = 0; dimension < n; dimension++)
+            {
+                s_centroids[local_idx * n + dimension] = centroids[local_idx * n + dimension];
+            }
+        }
+
 
         float min_distance = MAX_FLOAT;
         int closest_centroid = 0;
 
         for (int centroid = 0; centroid < K; centroid++)
         {
-            float distance = squareDistance(&points[point_idx], &centroids[centroid * n], n);
+            // float distance = squareDistance(&points[point_idx], &centroids[centroid * n], n);
+
+            float distance = 0;
+            for (int i = 0; i < n; i++)
+            {
+                distance += 
+                    (points[point_idx + i] - s_centroids[centroid * n + i]) * 
+                    (points[point_idx + i] - s_centroids[centroid * n + i]);
+            }
 
             if (distance < min_distance)
             {
@@ -226,7 +250,7 @@ namespace GPU
             }
         }
 
-        assignments[idx] = closest_centroid;
+        assignments[global_idx] = closest_centroid;
     }
 
     __global__ void prepareData(float* points, int* assignments, float* centroids_data, int* cluster_sizes_data, int N, int n, int K)
@@ -261,7 +285,7 @@ namespace GPU
         const int local_centroid_idx = local_idx * term_size;
         const int local_cluster_size_idx = local_idx * K;
 
-        // loop unrolling for better performence
+        // loop unrolling for better performence (as per official guide)
 
         // S = 32
         if (global_idx + 32 >= data_size)
@@ -422,7 +446,6 @@ namespace GPU
 
         for (unsigned int s = blockDim.x/2; s > 32; s>>=1)
         {
-            // imp3
             if (local_idx < s)
             {
                 // check if not outside of range
@@ -442,49 +465,6 @@ namespace GPU
                         s_centroids_data[local_centroid_idx + s * term_size + i];
                 }
             }
-
-            // imp1
-            //if (local_idx % (2 * s) == 0)
-            //{
-            //    // check if not outside of range
-            //    if (global_idx + s >= data_size)
-            //    {
-            //        break;
-            //    }
-
-            //    for (int i = 0; i < K; i++)
-            //    {
-            //        s_cluster_sizes_data[memory_offset + local_cluster_size_idx + i] += 
-            //            s_cluster_sizes_data[memory_offset + local_cluster_size_idx + s * K + i];
-            //    }
-            //    for (int i = 0; i < term_size; i++)
-            //    {
-            //        s_centroids_data[local_centroid_idx + i] += 
-            //            s_centroids_data[local_centroid_idx + s * term_size + i];
-            //    }
-            //}
-
-            // imp2 
-            //int index = 2 * s * local_idx;
-            //if (index < blockDim.x)
-            //{
-            //    // check if not outside of range
-            //    if (global_idx + s >= data_size)
-            //    {
-            //        break;
-            //    }
-
-            //    for (int i = 0; i < K; i++)
-            //    {
-            //        s_cluster_sizes_data[memory_offset + index * K + i] +=
-            //            s_cluster_sizes_data[memory_offset + index * K + s * K + i];
-            //    }
-            //    for (int i = 0; i < term_size; i++)
-            //    {
-            //        s_centroids_data[index * term_size + i] +=
-            //            s_centroids_data[index * term_size + s * term_size + i];
-            //    }
-            //}
             __syncthreads();
         }
 
