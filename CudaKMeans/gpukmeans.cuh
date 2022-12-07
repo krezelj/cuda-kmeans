@@ -14,8 +14,6 @@ namespace GPU
 
 	// common
 
-	__device__ float squareDistance(float* p, float* q, int n);
-
 	__global__ void divideCentroidCoordinates(float* centroids, int* cluster_sizes, int n, int K);
 
 	__global__ void assignPointsToClusters(float* points, float* centroids, int* assignments, int N, int n, int K);

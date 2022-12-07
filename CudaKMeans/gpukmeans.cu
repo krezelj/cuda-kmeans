@@ -164,16 +164,6 @@ namespace GPU
         return centroids;
     }
 
-    __device__ float squareDistance(float* p, float* q, int n)
-    {
-        float distance = 0;
-        for (int i = 0; i < n; i++)
-        {
-            distance += (p[i] - q[i]) * (p[i] - q[i]);
-        }
-        return distance;
-    }
-
     __global__ void assignPointsToClusters(float* points, float* centroids, int* assignments, int N, int n, int K)
     {
         const int local_idx = threadIdx.x;
