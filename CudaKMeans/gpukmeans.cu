@@ -8,7 +8,7 @@
 
 namespace GPU
 {
-    __host__ float* gpuKMeans(float* points, int N, int n, int K, int max_iterations)
+    __host__ float* gpuKMeans(float* points, int N, int n, int K, int max_iterations, PR_MODE pr_mode)
     {
         float* centroids = sampleCentroids(N, n, K);
 
@@ -38,6 +38,7 @@ namespace GPU
             return NULL;
         }
 
+
         // prepare centroids to be used by GPU
         float* d_centroids = 0;
         cudaStatus = cudaMalloc((void**)&d_centroids, K * n * sizeof(float));
@@ -52,6 +53,7 @@ namespace GPU
             return NULL;
         }
 
+
         // prepare assignments
         int* assignments = new int[N];
         int* d_assignments = 0;
@@ -60,6 +62,7 @@ namespace GPU
             fprintf(stderr, "Failed to allocate memory for assignments");
             return NULL;
         }
+
 
         // prepare cluster sizes
         int* cluster_sizes = new int[K];
@@ -70,8 +73,8 @@ namespace GPU
             return NULL;
         }
 
-        // prepare data array for summing cluster coordinates
-        // float* points_data = new float[K * n * N];
+
+        // prepare data array for summing cluster coordinates (using parallel reduction)
         float* d_centroids_data = 0;
         cudaStatus = cudaMalloc((void**)&d_centroids_data, K * n * N * sizeof(float));
         if (cudaStatus != cudaSuccess) {
@@ -79,7 +82,8 @@ namespace GPU
             return NULL;
         }
 
-        // prepare data array for summing cluster sizes
+
+        // prepare data array for summing cluster sizes (using parallel reduction)
         int* d_cluster_sizes_data = 0;
         cudaStatus = cudaMalloc((void**)&d_cluster_sizes_data, K * N * sizeof(int));
         if (cudaStatus != cudaSuccess) {
@@ -94,84 +98,57 @@ namespace GPU
             assignPointsToClusters<<<gridDim, blockDim, K * n * sizeof(float)>>>(d_points, d_centroids, d_assignments, N, n, K);
 
             // check if enough points changed clusters
+
             /*cudaStatus = cudaMemcpy(assignments, d_assignments, N * sizeof(int), cudaMemcpyDeviceToHost);
             if (cudaStatus != cudaSuccess) {
                 fprintf(stderr, "cudaMemcpy failed!");
             }*/
 
             // update clusters
-
-
-            // ------------------------------------- naive version --------------------------------------------
-            // // reset centroids and cluster sizes to prepare them for summation
-            //cudaMemset(d_centroids, 0.0, K * n * sizeof(float));
-            //cudaMemset(d_cluster_sizes, 0, K * sizeof(int));
-
-            //// reserve shared memory for assignments and points, we need:
-            //// THREADS_PER_BLOCK        assignements (int) +
-            //// THREADS_PER_BLOCK * n    coordinates (floats)
-            //updateCentroidsNaive<<<gridDim, blockDim, THREADS_PER_BLOCK * sizeof(int) + THREADS_PER_BLOCK * n * sizeof(float)>>>
-            //    (d_points, d_centroids, d_assignments, d_cluster_sizes, N, n, K);
-
-            // -------------------------------------------------------------------------------------------------
-
-            prepareData<<<gridDim, blockDim>>>(d_points, d_assignments, d_centroids_data, d_cluster_sizes_data, N, n, K);
-
-            int data_size = N;
-            while (data_size > 1)
+            if (pr_mode == SIMPLIFIED_PARALLEL_REDUCTION)
             {
-                unsigned int blocks = ceilf((float)data_size / THREADS_PER_BLOCK);
-                sumData<<<blocks, blockDim, K * n * THREADS_PER_BLOCK * sizeof(float) + K * THREADS_PER_BLOCK * sizeof(int)>>>
-                    (d_centroids_data, d_cluster_sizes_data, data_size, n, K);
-                data_size = blocks;
+                 // reset centroids and cluster sizes to prepare them for summation
+                cudaMemset(d_centroids, 0.0, K * n * sizeof(float));
+                cudaMemset(d_cluster_sizes, 0, K * sizeof(int));
+
+                // reserve shared memory for assignments and points, we need:
+                // THREADS_PER_BLOCK        assignements (int) +
+                // THREADS_PER_BLOCK * n    coordinates (floats)
+                updateCentroidsNaive<<<gridDim, blockDim, THREADS_PER_BLOCK * sizeof(int) + THREADS_PER_BLOCK * n * sizeof(float)>>>
+                    (d_points, d_centroids, d_assignments, d_cluster_sizes, N, n, K);
+            }
+            else if (pr_mode == PROPER_PARALLEL_REDUCTION)
+            {
+                prepareData<<<gridDim, blockDim>>>(d_points, d_assignments, d_centroids_data, d_cluster_sizes_data, N, n, K);
+
+                int data_size = N;
+                while (data_size > 1)
+                {
+                    unsigned int blocks = ceilf((float)data_size / THREADS_PER_BLOCK);
+                    sumData<<<blocks, blockDim, K * n * THREADS_PER_BLOCK * sizeof(float) + K * THREADS_PER_BLOCK * sizeof(int)>>>
+                        (d_centroids_data, d_cluster_sizes_data, data_size, n, K);
+                    data_size = blocks;
+                }
+
+                // move data
+                cudaStatus = cudaMemcpy(d_centroids, d_centroids_data, K * n * sizeof(float), cudaMemcpyDeviceToDevice);
+                if (cudaStatus != cudaSuccess) {
+                    fprintf(stderr, "cudaMemcpy failed!");
+                }
+
+                cudaStatus = cudaMemcpy(d_cluster_sizes, d_cluster_sizes_data, K * sizeof(int), cudaMemcpyDeviceToDevice);
+                if (cudaStatus != cudaSuccess) {
+                    fprintf(stderr, "cudaMemcpy failed!");
+                }
             }
 
-            // move data
-            cudaStatus = cudaMemcpy(d_centroids, d_centroids_data, K * n * sizeof(float), cudaMemcpyDeviceToDevice);
-            if (cudaStatus != cudaSuccess) {
-                fprintf(stderr, "cudaMemcpy failed!");
-            }
-
-            cudaStatus = cudaMemcpy(d_cluster_sizes, d_cluster_sizes_data, K * sizeof(int), cudaMemcpyDeviceToDevice);
-            if (cudaStatus != cudaSuccess) {
-                fprintf(stderr, "cudaMemcpy failed!");
-            }
-
+            // divide summed coordinates by cluster sizes
             divideCentroidCoordinates<<<1, K>>>(d_centroids, d_cluster_sizes, n, K);
 
-            /*float* points_data = new float[K * n];
-            cudaStatus = cudaMemcpy(points_data, d_centroids_data, K * n * sizeof(float), cudaMemcpyDeviceToHost);
-            if (cudaStatus != cudaSuccess) {
-                fprintf(stderr, "cudaMemcpy failed!");
-            }
-            for (int i = 0; i < K * n; i++)
-            {
-                std::cout << points_data[i] << std::endl;
-            }*/
-
-            /*int* ass = new int[K];
-            cudaStatus = cudaMemcpy(ass, d_assignments_data, K * sizeof(int), cudaMemcpyDeviceToHost);
-            if (cudaStatus != cudaSuccess) {
-                fprintf(stderr, "cudaMemcpy failed!");
-            }
-            for (int i = 0; i < K; i++)
-            {
-                std::cout << ass[i] << std::endl;
-            }*/
-
-            // DEBUG print cluster sizes
-            /*cudaStatus = cudaMemcpy(cluster_sizes, d_cluster_sizes, K * sizeof(int), cudaMemcpyDeviceToHost);
-            if (cudaStatus != cudaSuccess) {
-                fprintf(stderr, "cudaMemcpy failed!");
-            }
-            std::cout << "Cluster sizes after " << iteration + 1 << " iterations" << std::endl;
-            for (int i = 0; i < K; i++)
-            {
-                std::cout << cluster_sizes[i] << std::endl;
-            }*/
         }
         cudaDeviceSynchronize();
 
+        // copy calculated centroids back to host
         cudaStatus = cudaMemcpy(centroids, d_centroids, K * n * sizeof(float), cudaMemcpyDeviceToHost);
         if (cudaStatus != cudaSuccess) {
             fprintf(stderr, "cudaMemcpy failed!");
@@ -186,6 +163,8 @@ namespace GPU
         cudaFree(d_centroids);
         cudaFree(d_assignments);
         cudaFree(d_cluster_sizes);
+        cudaFree(d_centroids_data);
+        cudaFree(d_cluster_sizes_data);
 
         cudaDeviceReset();
 
@@ -410,17 +389,19 @@ namespace GPU
         // This process sums a partition of data assigned to a given block to a single value
         // and then recursively repeat the process by launching the kernel again
 
-        // However we need do not want to sum everything, we want to have K independent sums for each cluster.
+        // However we do not want to sum everything, we want to have K independent sums for each cluster.
         // To achieve this we will expand each point to be of size K * n and set 0 to every cell except
-        // the one corresponding to the cluster the point belongs to.
+        // the ones corresponding to the cluster the point belongs to.
+        // 
         // This way we can sum everything up normally and in the end the resulting array of K * n will have sums
         // of coordinates for all clusters grouped together and easily seperable.
 
-        extern __shared__ float s_centroids_data[]; // size if THREADS_PER_BLOCK * K * n + THREADS_PER_BLOCK * K;
+        // size is THREADS_PER_BLOCK * K * n + THREADS_PER_BLOCK * K;
+        extern __shared__ float s_centroids_data[]; 
         extern __shared__ int s_cluster_sizes_data[];
         int memory_offset = THREADS_PER_BLOCK * K * n;
         
-        // copy from global to shared, perform initial addition if possible
+        // copy from global to shared, perform initial addition if possible (as per official guide)
         for (int i = 0; i < K; i++)
         {
             s_cluster_sizes_data[memory_offset + local_cluster_size_idx + i] = 
@@ -432,7 +413,7 @@ namespace GPU
             }
         }
 
-        // copy from global to shared, perform initial addition if possible
+        // copy from global to shared, perform initial addition if possible (as per official guide)
         for (int i = 0; i < term_size; i++)
         {
             s_centroids_data[local_centroid_idx + i] = centroids_data[global_centroid_idx + i];
@@ -468,12 +449,13 @@ namespace GPU
             __syncthreads();
         }
 
+        // unroll the last few iterations for better performance (as per official guide)
         if (local_idx < 32)
         {
             warpReduce(s_centroids_data, s_cluster_sizes_data, local_idx, global_idx, data_size, K, term_size, memory_offset);
         }
 
-        // copy to global
+        // copy to global memory
         if (local_idx == 0)
         {
             for (int i = 0; i < K; i++)
@@ -502,15 +484,12 @@ namespace GPU
 
         extern __shared__ float s_points[];
         extern __shared__ int s_assignments[];
-        int memory_offset = THREADS_PER_BLOCK; // used to offset pointers when using s_points
+        int memory_offset = THREADS_PER_BLOCK;
 
-        // copy corresponding point to shared memory
         for (int dimension = 0; dimension < n; dimension++)
         {
             s_points[memory_offset + local_point_idx + dimension] = points[global_point_idx + dimension];
         }
-
-        // copy assignments to shared memory
         s_assignments[local_idx] = assignments[global_idx];
 
         __syncthreads();

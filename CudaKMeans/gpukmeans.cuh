@@ -3,9 +3,14 @@
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
+#define PR_MODE int
+
 namespace GPU
 {
-	__host__ float* gpuKMeans(float* points, int N, int n, int K, int max_iterations);
+	const PR_MODE PROPER_PARALLEL_REDUCTION = 0;
+	const PR_MODE SIMPLIFIED_PARALLEL_REDUCTION = 1;
+
+	__host__ float* gpuKMeans(float* points, int N, int n, int K, int max_iterations, PR_MODE parallel_reduction_mode = PROPER_PARALLEL_REDUCTION);
 
 	// common
 
