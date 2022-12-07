@@ -253,11 +253,121 @@ namespace GPU
         }
     }
 
+    __device__ void warpReduce(
+        volatile float* s_centroids_data, volatile int* s_cluster_sizes_data, 
+        const int local_idx, const int global_idx, 
+        const int data_size, const int K, const int term_size, const int memory_offset)
+    {
+        const int local_centroid_idx = local_idx * term_size;
+        const int local_cluster_size_idx = local_idx * K;
+
+        // loop unrolling for better performence
+
+        // S = 32
+        if (global_idx + 32 >= data_size)
+        {
+            return;
+        }
+        for (int i = 0; i < K; i++)
+        {
+            s_cluster_sizes_data[memory_offset + local_cluster_size_idx + i] +=
+                s_cluster_sizes_data[memory_offset + local_cluster_size_idx + 32 * K + i];
+        }
+        for (int i = 0; i < term_size; i++)
+        {
+            s_centroids_data[local_centroid_idx + i] +=
+                s_centroids_data[local_centroid_idx + 32 * term_size + i];
+        }
+
+        // S = 16
+        if (global_idx + 16 >= data_size)
+        {
+            return;
+        }
+        for (int i = 0; i < K; i++)
+        {
+            s_cluster_sizes_data[memory_offset + local_cluster_size_idx + i] +=
+                s_cluster_sizes_data[memory_offset + local_cluster_size_idx + 16 * K + i];
+        }
+        for (int i = 0; i < term_size; i++)
+        {
+            s_centroids_data[local_centroid_idx + i] +=
+                s_centroids_data[local_centroid_idx + 16 * term_size + i];
+        }
+
+        // S = 8
+        if (global_idx + 8 >= data_size)
+        {
+            return;
+        }
+        for (int i = 0; i < K; i++)
+        {
+            s_cluster_sizes_data[memory_offset + local_cluster_size_idx + i] +=
+                s_cluster_sizes_data[memory_offset + local_cluster_size_idx + 8 * K + i];
+        }
+        for (int i = 0; i < term_size; i++)
+        {
+            s_centroids_data[local_centroid_idx + i] +=
+                s_centroids_data[local_centroid_idx + 8 * term_size + i];
+        }
+
+        // S = 4
+        if (global_idx + 4 >= data_size)
+        {
+            return;
+        }
+        for (int i = 0; i < K; i++)
+        {
+            s_cluster_sizes_data[memory_offset + local_cluster_size_idx + i] +=
+                s_cluster_sizes_data[memory_offset + local_cluster_size_idx + 4 * K + i];
+        }
+        for (int i = 0; i < term_size; i++)
+        {
+            s_centroids_data[local_centroid_idx + i] +=
+                s_centroids_data[local_centroid_idx + 4 * term_size + i];
+        }
+
+        // S = 2
+        if (global_idx + 2 >= data_size)
+        {
+            return;
+        }
+        for (int i = 0; i < K; i++)
+        {
+            s_cluster_sizes_data[memory_offset + local_cluster_size_idx + i] +=
+                s_cluster_sizes_data[memory_offset + local_cluster_size_idx + 2 * K + i];
+        }
+        for (int i = 0; i < term_size; i++)
+        {
+            s_centroids_data[local_centroid_idx + i] +=
+                s_centroids_data[local_centroid_idx + 2 * term_size + i];
+        }
+
+        // S = 1
+        if (global_idx + 1 >= data_size)
+        {
+            return;
+        }
+        for (int i = 0; i < K; i++)
+        {
+            s_cluster_sizes_data[memory_offset + local_cluster_size_idx + i] +=
+                s_cluster_sizes_data[memory_offset + local_cluster_size_idx + 1 * K + i];
+        }
+        for (int i = 0; i < term_size; i++)
+        {
+            s_centroids_data[local_centroid_idx + i] +=
+                s_centroids_data[local_centroid_idx + 1 * term_size + i];
+        }
+    }
+
     __global__ void sumData(float* centroids_data, int* cluster_sizes_data, int data_size, int n, int K)
     {
         int term_size = K * n;
 
-        const int global_idx = blockIdx.x * blockDim.x + threadIdx.x;
+        // blockDim.x*2 as suggested in the official parallel reduction guide
+        // because in the first iteration half the threads are idle
+        // so we will perform the first addition while copying the data
+        const int global_idx = blockIdx.x * (blockDim.x*2) + threadIdx.x;
         const int local_idx = threadIdx.x;
 
         const int global_centroid_idx = global_idx * term_size;
@@ -286,20 +396,34 @@ namespace GPU
         extern __shared__ int s_cluster_sizes_data[];
         int memory_offset = THREADS_PER_BLOCK * K * n;
         
+        // copy from global to shared, perform initial addition if possible
         for (int i = 0; i < K; i++)
         {
-            s_cluster_sizes_data[memory_offset + local_cluster_size_idx + i] = cluster_sizes_data[global_cluster_size_idx + i];
+            s_cluster_sizes_data[memory_offset + local_cluster_size_idx + i] = 
+                cluster_sizes_data[global_cluster_size_idx + i];
+            if (global_idx + blockDim.x < data_size)
+            {
+                s_cluster_sizes_data[memory_offset + local_cluster_size_idx + i] += 
+                    cluster_sizes_data[global_cluster_size_idx + blockDim.x * K + i];
+            }
         }
+
+        // copy from global to shared, perform initial addition if possible
         for (int i = 0; i < term_size; i++)
         {
             s_centroids_data[local_centroid_idx + i] = centroids_data[global_centroid_idx + i];
+            if (global_idx + blockDim.x < data_size)
+            {
+                s_centroids_data[local_centroid_idx + i] += centroids_data[global_centroid_idx + blockDim.x * term_size + i];
+            }
         }
 
         __syncthreads();
 
-        for (unsigned int s = 1; s < blockDim.x; s *= 2)
+        for (unsigned int s = blockDim.x/2; s > 32; s>>=1)
         {
-            if (local_idx % (2 * s) == 0)
+            // imp3
+            if (local_idx < s)
             {
                 // check if not outside of range
                 if (global_idx + s >= data_size)
@@ -318,7 +442,55 @@ namespace GPU
                         s_centroids_data[local_centroid_idx + s * term_size + i];
                 }
             }
+
+            // imp1
+            //if (local_idx % (2 * s) == 0)
+            //{
+            //    // check if not outside of range
+            //    if (global_idx + s >= data_size)
+            //    {
+            //        break;
+            //    }
+
+            //    for (int i = 0; i < K; i++)
+            //    {
+            //        s_cluster_sizes_data[memory_offset + local_cluster_size_idx + i] += 
+            //            s_cluster_sizes_data[memory_offset + local_cluster_size_idx + s * K + i];
+            //    }
+            //    for (int i = 0; i < term_size; i++)
+            //    {
+            //        s_centroids_data[local_centroid_idx + i] += 
+            //            s_centroids_data[local_centroid_idx + s * term_size + i];
+            //    }
+            //}
+
+            // imp2 
+            //int index = 2 * s * local_idx;
+            //if (index < blockDim.x)
+            //{
+            //    // check if not outside of range
+            //    if (global_idx + s >= data_size)
+            //    {
+            //        break;
+            //    }
+
+            //    for (int i = 0; i < K; i++)
+            //    {
+            //        s_cluster_sizes_data[memory_offset + index * K + i] +=
+            //            s_cluster_sizes_data[memory_offset + index * K + s * K + i];
+            //    }
+            //    for (int i = 0; i < term_size; i++)
+            //    {
+            //        s_centroids_data[index * term_size + i] +=
+            //            s_centroids_data[index * term_size + s * term_size + i];
+            //    }
+            //}
             __syncthreads();
+        }
+
+        if (local_idx < 32)
+        {
+            warpReduce(s_centroids_data, s_cluster_sizes_data, local_idx, global_idx, data_size, K, term_size, memory_offset);
         }
 
         // copy to global

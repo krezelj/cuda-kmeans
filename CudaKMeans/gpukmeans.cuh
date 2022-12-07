@@ -21,6 +21,11 @@ namespace GPU
 
 	// better implementation
 
+	__device__ void warpReduce(
+		volatile float* s_centroids_data, volatile int* s_cluster_sizes_data,
+		const int local_idx, const int global_idx,
+		const int data_size, const int K, const int term_size, const int memory_offset);
+
 	__global__ void prepareData(float* points, int* assignments, float* centroids_data, int* cluster_sizes_data, int N, int n, int K);
 
 	__global__ void sumData(float* centroids_data, int* cluster_sizes_data, int data_size, int n, int K);

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <vector>
+#include <chrono>
 
 #include "cpukmeans.h"
 #include "gpukmeans.cuh"
@@ -28,16 +29,22 @@ int main()
 {
     srand(time(0));
 
-    const int N = 1000000, n = 3, K = 8;
+    const int N = 5000000, n = 3, K = 8;
 
     float* points = generatePoints(N, n);
     float* centroids;
 
-    centroids = CPU::cpuKMeans(points, N, n, K, 100);
+    /*centroids = CPU::cpuKMeans(points, N, n, K, 100);
     std::cout << "CPU" << std::endl;
-    display_centroids(centroids, K, n);
+    display_centroids(centroids, K, n);*/
 
+    auto start = std::chrono::high_resolution_clock::now();
     centroids = GPU::gpuKMeans(points, N, n, K, 100);
+    auto stop = std::chrono::high_resolution_clock::now();
+
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+    std::cout << duration.count() << std::endl;
+
     std::cout << "GPU" << std::endl;
     display_centroids(centroids, K, n);
 
