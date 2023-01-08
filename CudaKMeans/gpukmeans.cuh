@@ -10,11 +10,11 @@ namespace GPU
 	const PR_MODE PROPER_PARALLEL_REDUCTION = 0;
 	const PR_MODE SIMPLIFIED_PARALLEL_REDUCTION = 1;
 
-	__host__ float* gpuKMeans(float* points, int N, int n, int K, int max_iterations, PR_MODE parallel_reduction_mode = PROPER_PARALLEL_REDUCTION);
+	__host__ void gpuKMeans(float* points, int N, int n, int K, int max_iterations, PR_MODE parallel_reduction_mode, float* out_centroids, int* out_assignments);
 
 	// common
 
-	__global__ void divideCentroidCoordinates(float* centroids, int* cluster_sizes, int n, int K);
+	__global__ void divideCentroidCoordinates(float* centroids, float* centroids_previous, int* cluster_sizes, int n, int K);
 
 	__global__ void assignPointsToClusters(float* points, float* centroids, int* assignments, int N, int n, int K);
 

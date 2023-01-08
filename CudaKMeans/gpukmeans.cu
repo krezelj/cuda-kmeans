@@ -8,9 +8,9 @@
 
 namespace GPU
 {
-    __host__ float* gpuKMeans(float* points, int N, int n, int K, int max_iterations, PR_MODE pr_mode)
+    __host__ void gpuKMeans(float* points, int N, int n, int K, int max_iterations, PR_MODE pr_mode, float* out_centroids, int* out_assignments)
     {
-        float* centroids = sampleCentroids(N, n, K);
+        float* centroids = sampleCentroids(points, N, n, K);
 
         // calculate kernel parameters
         dim3 gridDim((unsigned int)ceilf((float)N / THREADS_PER_BLOCK));
@@ -21,7 +21,7 @@ namespace GPU
         cudaStatus = cudaSetDevice(0);
         if (cudaStatus != cudaSuccess) {
             fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
-            return NULL;
+            return;
         }
 
         // prepare points to be used by GPU
@@ -29,13 +29,13 @@ namespace GPU
         cudaStatus = cudaMalloc((void**)&d_points, N * n * sizeof(float));
         if (cudaStatus != cudaSuccess) {
             fprintf(stderr, "cudaMalloc failed!");
-            return NULL;
+            return;
         }
         cudaStatus = cudaMemcpy(d_points, points, N * n * sizeof(float), cudaMemcpyHostToDevice);
         if (cudaStatus != cudaSuccess) {
             fprintf(stderr, "cudaMemcpy failed!");
             cudaFree(d_points);
-            return NULL;
+            return;
         }
 
 
@@ -44,23 +44,29 @@ namespace GPU
         cudaStatus = cudaMalloc((void**)&d_centroids, K * n * sizeof(float));
         if (cudaStatus != cudaSuccess) {
             fprintf(stderr, "cudaMalloc failed!");
-            return NULL;
+            return;
         }
         cudaStatus = cudaMemcpy(d_centroids, centroids, K * n * sizeof(float), cudaMemcpyHostToDevice);
         if (cudaStatus != cudaSuccess) {
             fprintf(stderr, "cudaMemcpy failed!");
             cudaFree(d_centroids);
-            return NULL;
+            return;
+        }
+
+        float* d_centroids_previous = 0;
+        cudaStatus = cudaMalloc((void**)&d_centroids_previous, K * n * sizeof(float));
+        if (cudaStatus != cudaSuccess) {
+            fprintf(stderr, "cudaMalloc failed!");
+            return;
         }
 
 
         // prepare assignments
-        int* assignments = new int[N];
         int* d_assignments = 0;
         cudaStatus = cudaMalloc((void**)&d_assignments, N * sizeof(int));
         if (cudaStatus != cudaSuccess) {
             fprintf(stderr, "Failed to allocate memory for assignments");
-            return NULL;
+            return;
         }
 
 
@@ -70,7 +76,7 @@ namespace GPU
         cudaStatus = cudaMalloc((void**)&d_cluster_sizes, K * sizeof(int));
         if (cudaStatus != cudaSuccess) {
             fprintf(stderr, "Failed to allocate memory for cluster sizes");
-            return NULL;
+            return;
         }
 
 
@@ -79,7 +85,7 @@ namespace GPU
         cudaStatus = cudaMalloc((void**)&d_centroids_data, K * n * N * sizeof(float));
         if (cudaStatus != cudaSuccess) {
             fprintf(stderr, "Failed to allocate memory for points data");
-            return NULL;
+            return;
         }
 
 
@@ -88,12 +94,14 @@ namespace GPU
         cudaStatus = cudaMalloc((void**)&d_cluster_sizes_data, K * N * sizeof(int));
         if (cudaStatus != cudaSuccess) {
             fprintf(stderr, "Failed to allocate memory for assignments data");
-            return NULL;
+            return;
         }
 
         // main algorithm
         for (int iteration = 0; iteration < max_iterations; iteration++)
         {
+            cudaMemcpy(d_centroids_previous, d_centroids, K * n * sizeof(float), cudaMemcpyDeviceToDevice);
+
             // calculate assignments
             assignPointsToClusters<<<gridDim, blockDim, K * n * sizeof(float)>>>(d_points, d_centroids, d_assignments, N, n, K);
 
@@ -136,21 +144,26 @@ namespace GPU
             }
 
             // divide summed coordinates by cluster sizes
-            divideCentroidCoordinates<<<1, K>>>(d_centroids, d_cluster_sizes, n, K);
+            divideCentroidCoordinates<<<1, K>>>(d_centroids, d_centroids_previous, d_cluster_sizes, n, K);
 
         }
         cudaDeviceSynchronize();
 
-        // copy calculated centroids back to host
-        cudaStatus = cudaMemcpy(centroids, d_centroids, K * n * sizeof(float), cudaMemcpyDeviceToHost);
+        // copy calculated centroids and assignments back to host
+        cudaStatus = cudaMemcpy(out_centroids, d_centroids, K * n * sizeof(float), cudaMemcpyDeviceToHost);
+        if (cudaStatus != cudaSuccess) {
+            fprintf(stderr, "cudaMemcpy failed!");
+        }
+
+        cudaStatus = cudaMemcpy(out_assignments, d_assignments, N * sizeof(int), cudaMemcpyDeviceToHost);
         if (cudaStatus != cudaSuccess) {
             fprintf(stderr, "cudaMemcpy failed!");
         }
         
         // clean-up
 
-        delete[] assignments;
         delete[] cluster_sizes;
+        delete[] centroids;
 
         cudaFree(d_points);
         cudaFree(d_centroids);
@@ -160,8 +173,6 @@ namespace GPU
         cudaFree(d_cluster_sizes_data);
 
         cudaDeviceReset();
-
-        return centroids;
     }
 
     __global__ void assignPointsToClusters(float* points, float* centroids, int* assignments, int N, int n, int K)
@@ -526,12 +537,26 @@ namespace GPU
         __syncthreads();
     }
 
-    __global__ void divideCentroidCoordinates(float* centroids, int* cluster_sizes, int n, int K)
+    __global__ void divideCentroidCoordinates(float* centroids, float* centroids_previous, int* cluster_sizes, int n, int K)
     {
         int centroid = threadIdx.x;
-        for (int dimension = 0; dimension < n; dimension++)
+        if (centroid >= K)
         {
-            centroids[centroid * n + dimension] = centroids[centroid * n + dimension] / cluster_sizes[centroid];
+            return;
+        }
+        if (cluster_sizes[centroid] == 0)
+        {
+            for (int dimension = 0; dimension < n; dimension++)
+            {
+                centroids[centroid * n + dimension] = centroids_previous[centroid * n + dimension];
+            }
+        }
+        else
+        {
+            for (int dimension = 0; dimension < n; dimension++)
+            {
+                centroids[centroid * n + dimension] = centroids[centroid * n + dimension] / cluster_sizes[centroid];
+            }
         }
     }
 }

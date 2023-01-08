@@ -7,7 +7,7 @@ namespace CPU
 {
     float* cpuKMeans(float* points, int N, int n, int K, int max_iterations)
     {
-        float* centroids = sampleCentroids(N, n, K);
+        float* centroids = sampleCentroids(points, N, n, K);
         int* assignments = new int[N];
 
         for (int iteration = 0; iteration < max_iterations; iteration++)
